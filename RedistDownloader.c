@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     assert(tmpPath.capacity > 0);
     Nob_Cmd cmd = { 0 };
 
-    tmpPath.count = GetTempPathA(tmpPath.capacity, tmpPath.items);
+    tmpPath.count = GetTempPathA((DWORD)tmpPath.capacity, tmpPath.items);
     if (tmpPath.count == 0) {
         nob_log(NOB_ERROR, "Could not get TEMP Path: %s", nob_win32_error_message(GetLastError()));
         nob_return_defer(1);
@@ -97,8 +97,9 @@ int main(int argc, char **argv) {
 
     nob_shift(argv, argc);
     for (int i = 0; i < argc; ++i) {
-        if (strcasecmp(argv[i], "-s") == 0)
+        if (_stricmp(argv[i], "-s") == 0) {
             skipInstall = true;
+        }
         if (skipInstall)
             break;
     }
@@ -158,13 +159,14 @@ int main(int argc, char **argv) {
     if (!get_java_link(&cmd, skipInstall))
         nob_return_defer(1);
 
-defer:
     if (!skipInstall) {
         tmpPath.count = rootTmpCount;
         nob_sb_append_null(&tmpPath);
 
         delete_folder_recursively(tmpPath.items);
     }
+
+defer:
 
     nob_sb_free(tmpPath);
     nob_cmd_free(cmd);

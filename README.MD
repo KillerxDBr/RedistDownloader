@@ -2,10 +2,10 @@
 
 VC++ Redist and Java Runtime Downloader
 
-To build (Win10 & Win11, MinGW only):
+To build (Win10 & Win11, MSVC or MinGW):
 
 ```console
-    cc -o nob.exe nob.c
+    cc -o nob.exe nob.c OR cl nob.c
     ./nob.exe
 ```
 
@@ -18,5 +18,4 @@ To build (Win10 & Win11, MinGW only):
 Files are saved in "%temp%\KxD.VCD.App\downloads"
 
 ## TODO List
-- Add MSVC build support.
 - Change Java page parsing to English.
