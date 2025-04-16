@@ -9,19 +9,29 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#define FLAG_IMPLEMENTATION
+#include "flag.h"
+
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
 typedef struct {
     const char *fileName;
     const char *url;
+    const char *args;
 } Resource;
+
+typedef struct {
+    Resource *items;
+    size_t count;
+    size_t capacity;
+} Resources;
 
 #define DL_DIR "downloads\\"
 
 // clang-format off
 // https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
-Resource resources[] = {
+Resource vc_resources[] = {
     {.fileName = "vcredist_2005_x86.exe", .url = "https://download.microsoft.com/download/8/B/4/8B42259F-5D70-43F4-AC2E-4B208FD8D66A/vcredist_x86.EXE"},
     {.fileName = "vcredist_2005_x64.exe", .url = "https://download.microsoft.com/download/8/B/4/8B42259F-5D70-43F4-AC2E-4B208FD8D66A/vcredist_x64.EXE"},
     
@@ -42,26 +52,53 @@ Resource resources[] = {
 };
 // clang-format on
 
-#define NUM_URLS NOB_ARRAY_LEN(resources)
+#define NUM_URLS NOB_ARRAY_LEN(vc_resources)
 
 #ifdef USE_LIBCURL
 static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream) { return fwrite(ptr, size, nmemb, (FILE *)stream); }
 #endif // USE_LIBCURL
 
+Nob_Cmd cmd = { 0 };
 Nob_String_Builder tmpPath = { 0 };
+Resources extra_resources = { 0 };
 
 bool IsExeInPath(const char *exe);
 int64_t get_file_size(const char *path);
 bool delete_folder_recursively(const char *path);
-bool get_java_link(Nob_Cmd *cmd, bool skipInstall);
+bool get_java_link(bool skipInstall);
+bool get_extra_resources(bool skipInstall);
+bool parse_config_file(void);
+
+void usage(FILE *stream) {
+    fprintf(stream, "Usage: ./RedistDownloader [OPTIONS]\n");
+    fprintf(stream, "OPTIONS:\n");
+    flag_print_options(stream);
+}
+
+#define CFG_FILE "config.csv"
 
 int main(int argc, char **argv) {
     int result = 0;
-    bool skipInstall = false;
+
+    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
+    bool *skipInstall = flag_bool("s", false, "Skip instalation");
+
+    if (!flag_parse(argc, argv)) {
+        usage(stderr);
+        flag_print_error(stderr);
+        exit(1);
+    }
+
+    if (*help) {
+        usage(stdout);
+        exit(0);
+    }
 
     nob_da_reserve(&tmpPath, MAX_PATH + 1);
     assert(tmpPath.capacity > 0);
-    Nob_Cmd cmd = { 0 };
+
+    if (!parse_config_file())
+        nob_return_defer(1);
 
     tmpPath.count = GetTempPathA((DWORD)tmpPath.capacity, tmpPath.items);
     if (tmpPath.count == 0) {
@@ -95,15 +132,6 @@ int main(int argc, char **argv) {
 
     tmpPath.count--;
 
-    nob_shift(argv, argc);
-    for (int i = 0; i < argc; ++i) {
-        if (_stricmp(argv[i], "-s") == 0) {
-            skipInstall = true;
-        }
-        if (skipInstall)
-            break;
-    }
-
     if (!IsExeInPath("curl")) {
         nob_log(NOB_ERROR, "curl.exe nao encontrado...");
         nob_return_defer(1);
@@ -112,12 +140,12 @@ int main(int argc, char **argv) {
     const size_t tmpPathSize = tmpPath.count;
     for (size_t i = 0; i < NUM_URLS; ++i) {
         tmpPath.count = tmpPathSize;
-        nob_sb_append_cstr(&tmpPath, resources[i].fileName);
+        nob_sb_append_cstr(&tmpPath, vc_resources[i].fileName);
         nob_sb_append_null(&tmpPath);
 
         puts("-------------------------------------------------------------------------------------");
-        nob_log(NOB_INFO, "File: '%s' -> Link: '%s'", tmpPath.items, resources[i].url);
-        nob_cmd_append(&cmd, "curl", "-L", "-o", tmpPath.items, resources[i].url);
+        nob_log(NOB_INFO, "File: '%s' -> Link: '%s'", tmpPath.items, vc_resources[i].url);
+        nob_cmd_append(&cmd, "curl", "-L", "-o", tmpPath.items, vc_resources[i].url);
 
         bool rst = nob_cmd_run_sync_and_reset(&cmd);
         Sleep(100);
@@ -131,10 +159,10 @@ int main(int argc, char **argv) {
 
     puts("-------------------------------------------------------------------------------------");
 
-    if (!skipInstall)
+    if (!*skipInstall)
         for (size_t i = 0; i < NUM_URLS; ++i) {
             tmpPath.count = tmpPathSize;
-            nob_sb_append_cstr(&tmpPath, resources[i].fileName);
+            nob_sb_append_cstr(&tmpPath, vc_resources[i].fileName);
             nob_sb_append_null(&tmpPath);
 
             nob_log(NOB_INFO, "Running '%s'", tmpPath.items);
@@ -156,18 +184,33 @@ int main(int argc, char **argv) {
         }
 
     tmpPath.count = tmpPathSize;
-    if (!get_java_link(&cmd, skipInstall))
+    if (!get_java_link(*skipInstall))
         nob_return_defer(1);
 
-    if (!skipInstall) {
-        tmpPath.count = rootTmpCount;
-        nob_sb_append_null(&tmpPath);
+    tmpPath.count = tmpPathSize;
+    if (!get_extra_resources(*skipInstall))
+        nob_return_defer(1);
 
+    tmpPath.count = rootTmpCount;
+    nob_sb_append_null(&tmpPath);
+    if (!*skipInstall) {
         delete_folder_recursively(tmpPath.items);
+    } else {
+        nob_log(NOB_INFO, "Arquivos baixados salvos em: \"%s\"", tmpPath.items);
+        // TODO: Abrir pasta de arquivos
+        // ShellExecuteA(NULL, "open", tmpPath.items, NULL, NULL, 10);
     }
 
 defer:
+    for (size_t i = 0; i < extra_resources.count; ++i) {
+        free((void *)extra_resources.items[i].fileName);
+        free((void *)extra_resources.items[i].url);
 
+        if (extra_resources.items[i].args)
+            free((void *)extra_resources.items[i].args);
+    }
+
+    nob_da_free(extra_resources);
     nob_sb_free(tmpPath);
     nob_cmd_free(cmd);
 
@@ -262,16 +305,61 @@ bool delete_folder_recursively(const char *path) {
 #define JDL_FILE "manual.jsp"
 #define JDL_URL "www.java.com/pt-br/download/manual.jsp"
 
-bool get_java_link(Nob_Cmd *cmd, bool skipInstall) {
+bool get_extra_resources(bool skipInstall) {
+    bool result = true;
+    cmd.count = 0;
+
+    Nob_String_Builder sb = { 0 };
+
+    char *exe;
+    for (size_t i = 0; i < extra_resources.count; ++i) {
+        exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, extra_resources.items[i].fileName);
+        nob_cmd_append(&cmd, "curl", "-o", exe, "-L", extra_resources.items[i].url);
+        if (!nob_cmd_run_sync_and_reset(&cmd)) {
+            nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", exe);
+            nob_return_defer(false);
+        }
+    }
+
+    if (!skipInstall) {
+        const size_t tmpBk = nob_temp_save();
+        for (size_t i = 0; i < extra_resources.count; ++i) {
+            nob_temp_rewind(tmpBk);
+            exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, extra_resources.items[i].fileName);
+
+            nob_cmd_append(&cmd, exe);
+            if (extra_resources.items[i].args && *extra_resources.items[i].args) {
+                const char *arg;
+                Nob_String_View args = nob_sv_trim(nob_sv_from_cstr(extra_resources.items[i].args));
+                while (args.count > 0) {
+                    arg = nob_temp_sv_to_cstr(nob_sv_chop_by_delim(&args, ' '));
+                    nob_cmd_append(&cmd, arg);
+                }
+            }
+
+            if (!nob_cmd_run_sync_and_reset(&cmd)) {
+                nob_log(NOB_ERROR, "Nao foi possivel instalar '%s'", exe);
+                nob_return_defer(false);
+            }
+        }
+        nob_temp_rewind(tmpBk);
+    }
+
+defer:
+    nob_sb_free(sb);
+    return result;
+}
+
+bool get_java_link(bool skipInstall) {
     bool result = true;
 
     Nob_String_Builder sb = { 0 };
 
-    cmd->count = 0;
+    cmd.count = 0;
     const char *htmlFile = nob_temp_sprintf(SV_Fmt JDL_FILE, (int)tmpPath.count, tmpPath.items);
 
-    nob_cmd_append(cmd, "curl", "-L", "-o", htmlFile, "\"" JDL_URL "\"", "-H", "\"User-Agent:", "Wget/1.25.0\"");
-    if (!nob_cmd_run_sync_and_reset(cmd)) {
+    nob_cmd_append(&cmd, "curl", "-L", "-o", htmlFile, "\"" JDL_URL "\"", "-H", "\"User-Agent:", "Wget/1.25.0\"");
+    if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", JDL_FILE);
         nob_return_defer(false);
     }
@@ -327,29 +415,121 @@ bool get_java_link(Nob_Cmd *cmd, bool skipInstall) {
     const char *x86exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, "java-x86.exe");
     const char *x64exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, "java-x64.exe");
 
-    nob_cmd_append(cmd, "curl", "-o", x86exe, "-L", x86link);
-    if (!nob_cmd_run_sync_and_reset(cmd)) {
+    nob_cmd_append(&cmd, "curl", "-o", x86exe, "-L", x86link);
+    if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", x86exe);
         nob_return_defer(false);
     }
 
-    nob_cmd_append(cmd, "curl", "-o", x64exe, "-L", x64link);
-    if (!nob_cmd_run_sync_and_reset(cmd)) {
+    nob_cmd_append(&cmd, "curl", "-o", x64exe, "-L", x64link);
+    if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", x64exe);
         nob_return_defer(false);
     }
 
     if (!skipInstall) {
-        nob_cmd_append(cmd, x86exe, "/s");
-        if (!nob_cmd_run_sync_and_reset(cmd)) {
+        nob_cmd_append(&cmd, x86exe, "/s");
+        if (!nob_cmd_run_sync_and_reset(&cmd)) {
             nob_log(NOB_ERROR, "Nao foi possivel instalar '%s'", x86exe);
             nob_return_defer(false);
         }
 
-        nob_cmd_append(cmd, x64exe, "/s");
-        if (!nob_cmd_run_sync_and_reset(cmd)) {
+        nob_cmd_append(&cmd, x64exe, "/s");
+        if (!nob_cmd_run_sync_and_reset(&cmd)) {
             nob_log(NOB_ERROR, "Nao foi possivel instalar '%s'", x64exe);
             nob_return_defer(false);
+        }
+    }
+
+defer:
+    nob_sb_free(sb);
+    return result;
+}
+
+const char *nob_sv_to_cstr(Nob_String_View sv) {
+    char *result = malloc(sv.count + 1);
+    NOB_ASSERT(result != NULL && "Buy More RAM");
+    memcpy(result, sv.data, sv.count);
+    result[sv.count] = '\0';
+    return result;
+}
+
+bool parse_config_file(void) {
+    bool result = true;
+
+    // Parse config.csv file
+    assert(tmpPath.capacity > MAX_PATH);
+
+    SetLastError(ERROR_SUCCESS);
+    DWORD rst = GetModuleFileNameA(NULL, tmpPath.items, tmpPath.capacity);
+    if (!rst) { // Get .exe file path
+        nob_log(NOB_ERROR, "GetModuleFileNameA failed: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    } else if (GetLastError()) {
+        nob_log(NOB_ERROR, "GetModuleFileNameA failed: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    }
+    tmpPath.count = rst - strlen(nob_path_name(tmpPath.items));
+    nob_sb_append_cstr(&tmpPath, CFG_FILE);
+    nob_sb_append_null(&tmpPath);
+    printf("Config FIle Path: '%.*s'\n", (int)tmpPath.count, tmpPath.items);
+
+    Nob_String_Builder sb = { 0 };
+    if (nob_file_exists(tmpPath.items) < 1) {
+        const char *cfgHeader = "# Linhas que começam com '#' sao ignoradas\n"
+                                "# Para links extras, adicione nesse arquivo\n"
+                                "# Nome Do Executavel, Link de Download, Argumentos da linha de comando (opcional)\n"
+                                "# vcredist_2015_x64.exe, https://aka.ms/vs/17/release/vc_redist.x64.exe, /install /quiet /norestart\n";
+        if (!nob_write_entire_file(tmpPath.items, cfgHeader, strlen(cfgHeader))) {
+            nob_return_defer(false);
+        }
+        nob_return_defer(true);
+    } else {
+        if (!nob_read_entire_file(tmpPath.items, &sb)) {
+            nob_return_defer(false);
+        }
+        Nob_String_View sv = nob_sv_trim(nob_sb_to_sv(sb));
+        Nob_String_View sv2;
+        Nob_String_View sv3;
+        Resource r;
+
+        // for (int i = 1; ; ++i) {
+        while (sv.count) {
+            memset(&r, 0, sizeof(r));
+
+            sv2 = nob_sv_trim(nob_sv_chop_by_delim(&sv, '\n'));
+
+            // printf("Line %02d: '" SV_Fmt "' -> %s\n", i, SV_Arg(sv2), (*sv2.data == '#') ? "Skipping Line..." : "Processing Line");
+
+            if (*sv2.data == '#')
+                continue;
+
+            Nob_String_View fileName;
+            Nob_String_View url;
+            Nob_String_View args;
+
+            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
+            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
+            if (sv3.count == 0)
+                continue;
+            fileName = sv3;
+
+            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
+            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
+            if (sv3.count == 0)
+                continue;
+            url = sv3;
+
+            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
+            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
+            args = sv3;
+
+            r.fileName = nob_sv_to_cstr(fileName);
+            r.url = nob_sv_to_cstr(url);
+            r.args = args.count ? nob_sv_to_cstr(args) : NULL;
+
+            nob_da_append(&extra_resources, r);
+            // puts("----------------------------------");
         }
     }
 
