@@ -95,3 +95,4 @@ dkms.conf
 downloads/
 *.res
 *.csv
+test.c

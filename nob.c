@@ -1,4 +1,4 @@
-#if !_WIN32
+#if !defined(_WIN32) || !_WIN32
 #error Windows Only...
 #endif
 
@@ -13,35 +13,48 @@
 
 // clang-format off
 #if defined(_MSC_VER)
-#  define CLIBS "shell32.lib", "kernel32.lib"
+#  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib"
 #  define CFLAGS "/W4", "/O2", "/nologo", "/D_CRT_SECURE_NO_WARNINGS"
 #else
-#  define CLIBS "-lshell32", "-lkernel32"
+#  define CLIBS "-lshell32", "-lkernel32", "-lole32"
 #  define CFLAGS "-Wall", "-Wextra", "-march=nocona", "-mtune=generic", "-O2", "-s"
 #endif
 
 #if defined(_MSC_VER)
-#  define CC "cl"
+#  ifndef CC
+#    define CC "cl"
+#  endif // CC
+
 #  define INC_PATH(path) "-I", path
 #  define OUT_PATH(path) nob_temp_sprintf("/Fe:%s", (path))
 
+#  ifndef RES
+#    define RES "rc"
+#  endif // RES
+
 #  define RES_FILE "resource.res"
-#  define RES "rc"
 #  define RES_OUT(path) "/fo", path
+
 #else
-#  if defined(__GNUC__)
-#    define CC "gcc"
-#  elif defined(__clang__)
-#    define CC "clang"
-#  else
-#    define CC "cc"
-#  endif
+
+#  ifndef CC
+#    if defined(__GNUC__)
+#      define CC "gcc"
+#    elif defined(__clang__)
+#      define CC "clang"
+#    else
+#      define CC "cc"
+#    endif
+#  endif // CC
 
 #  define INC_PATH(path) "-I", path
 #  define OUT_PATH(path) "-o", path
 
+#  ifndef RES
+#    define RES "windres"
+#  endif // RES
+
 #  define RES_FILE "resource.o"
-#  define RES "windres"
 #  define RES_OUT(path) OUT_PATH(path)
 #endif
 // clang-format on

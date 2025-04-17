@@ -9,6 +9,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#define WIN32_LEAN_AND_MEAN
+#include <Shlobj.h>
+
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
 
@@ -192,13 +195,43 @@ int main(int argc, char **argv) {
         nob_return_defer(1);
 
     tmpPath.count = rootTmpCount;
-    nob_sb_append_null(&tmpPath);
     if (!*skipInstall) {
+        nob_sb_append_null(&tmpPath);
         delete_folder_recursively(tmpPath.items);
     } else {
         nob_log(NOB_INFO, "Arquivos baixados salvos em: \"%s\"", tmpPath.items);
-        // TODO: Abrir pasta de arquivos
-        // ShellExecuteA(NULL, "open", tmpPath.items, NULL, NULL, 10);
+
+        nob_sb_append_cstr(&tmpPath, DL_DIR);
+        nob_sb_append_null(&tmpPath);
+
+        HRESULT hr = CoInitialize(NULL);
+        if (SUCCEEDED(hr)) {
+            wchar_t *wstr_path = nob_temp_alloc(tmpPath.count * sizeof(wchar_t));
+
+            if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmpPath.items, -1, wstr_path, tmpPath.count)) {
+                nob_log(NOB_ERROR, "MultiByteToWideChar failed: %s", nob_win32_error_message(GetLastError()));
+                CoUninitialize();
+                nob_return_defer(0);
+            }
+
+            PIDLIST_ABSOLUTE pidl;
+            hr = SHParseDisplayName(wstr_path, 0, &pidl, 0, 0);
+            if (hr == S_OK) {
+                ITEMIDLIST idNull = { 0 };
+                LPCITEMIDLIST pidlNull[1] = { &idNull };
+                hr = SHOpenFolderAndSelectItems(pidl, 1, pidlNull, 0);
+
+                if (hr != S_OK) {
+                    nob_log(NOB_ERROR, "SHOpenFolderAndSelectItems falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+                }
+                ILFree(pidl);
+            } else {
+                nob_log(NOB_ERROR, "SHParseDisplayName falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+            }
+            CoUninitialize();
+        } else {
+            nob_log(NOB_ERROR, "Nao foi possivel iniciar COM: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+        }
     }
 
 defer:
@@ -214,7 +247,8 @@ defer:
     nob_sb_free(tmpPath);
     nob_cmd_free(cmd);
 
-    system("pause");
+    MessageBoxA(NULL, "Todos os programas foram instalados com sucesso", "Sucesso...",
+                MB_TOPMOST | MB_OK | MB_ICONINFORMATION | MB_DEFBUTTON1);
 
     return result;
 }
