@@ -11,6 +11,9 @@
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
+#define FLAG_IMPLEMENTATION
+#include "flag.h"
+
 // clang-format off
 #if defined(_MSC_VER)
 #  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib"
@@ -59,41 +62,46 @@
 #endif
 // clang-format on
 
+void usage(FILE *stream) {
+    fprintf(stream, "Usage: ./RedistDownloader [OPTIONS]\n");
+    fprintf(stream, "OPTIONS:\n");
+    flag_print_options(stream);
+}
+
 int main(int argc, char **argv) {
     NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "nob.h");
 
-    bool force = false;
-    bool clean = false;
-    for (int i = 0; i < argc; ++i) {
-        bool used = false;
-        if (!used && _stricmp("-f", argv[i]) == 0) {
-            force = true;
-            used = true;
-        }
-        if (!used && _stricmp("-c", argv[i]) == 0) {
-            clean = true;
-            continue;
-        }
-        if (force && clean)
-            break;
+    bool *force = flag_bool("f", false, "Force Rebuild");
+    bool *clean = flag_bool("c", false, "Clean build artifacts");
+    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
+
+    if (!flag_parse(argc, argv)) {
+        usage(stderr);
+        flag_print_error(stderr);
+        exit(1);
+    }
+
+    if (*help) {
+        usage(stdout);
+        exit(0);
     }
 
     int result = 0;
     Cmd cmd = { 0 };
 
-    if (clean) {
+    if (*clean) {
         if (!nob_delete_file(RES_FILE) || !nob_delete_file("RedistDownloader.exe"))
             nob_return_defer(1);
-        force = true;
+        *force = true;
     }
 
-    if (force || nob_needs_rebuild(RES_FILE, (const char *[]){ "resource.rc", "manifest.xml" }, 2) != 0) {
+    if (*force || nob_needs_rebuild(RES_FILE, (const char *[]){ "resource.rc", "manifest.xml" }, 2) != 0) {
         cmd_append(&cmd, RES, RES_OUT(RES_FILE), "resource.rc");
         if (!cmd_run_sync_and_reset(&cmd))
             return_defer(1);
     }
 
-    if (force || nob_needs_rebuild("RedistDownloader.exe", (const char *[]){ "RedistDownloader.c", RES_FILE }, 2) != 0) {
+    if (*force || nob_needs_rebuild("RedistDownloader.exe", (const char *[]){ "RedistDownloader.c", RES_FILE }, 2) != 0) {
         cmd_append(&cmd, CC, INC_PATH("include/"), OUT_PATH("RedistDownloader.exe"), "RedistDownloader.c", RES_FILE, CLIBS, CFLAGS);
         if (!cmd_run_sync_and_reset(&cmd))
             return_defer(1);
