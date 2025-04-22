@@ -57,10 +57,6 @@ Resource vc_resources[] = {
 
 #define NUM_URLS NOB_ARRAY_LEN(vc_resources)
 
-#ifdef USE_LIBCURL
-static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream) { return fwrite(ptr, size, nmemb, (FILE *)stream); }
-#endif // USE_LIBCURL
-
 Nob_Cmd cmd = { 0 };
 Nob_String_Builder tmpPath = { 0 };
 Resources extra_resources = { 0 };
@@ -83,17 +79,19 @@ void usage(FILE *stream) {
 int main(int argc, char **argv) {
     int result = 0;
 
-    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
     bool *skipInstall = flag_bool("s", false, "Skip instalation");
+    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
 
     if (!flag_parse(argc, argv)) {
         usage(stderr);
         flag_print_error(stderr);
+        system("pause");
         exit(1);
     }
 
     if (*help) {
         usage(stdout);
+        system("pause");
         exit(0);
     }
 
