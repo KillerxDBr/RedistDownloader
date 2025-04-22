@@ -510,8 +510,8 @@ bool parse_config_file(void) {
 
     Nob_String_Builder sb = { 0 };
     if (nob_file_exists(tmpPath.items) < 1) {
-        const char *cfgHeader = "# Linhas que começam com '#' sao ignoradas\n"
-                                "# Para links extras, adicione nesse arquivo\n"
+        const char *cfgHeader = "# Linhas que começam com '#' sao ignoradas,,\n"
+                                "# Para links extras, adicione nesse arquivo,\n"
                                 "# Nome Do Executavel, Link de Download, Argumentos da linha de comando (opcional)\n"
                                 "# vcredist_2015_x64.exe, https://aka.ms/vs/17/release/vc_redist.x64.exe, /install /quiet /norestart\n";
         if (!nob_write_entire_file(tmpPath.items, cfgHeader, strlen(cfgHeader))) {
