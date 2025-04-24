@@ -1,10 +1,20 @@
+#if !defined(_WIN32) || !_WIN32
+#error Windows Only...
+#endif
+
 #define NTDDI_VERSION NTDDI_WIN10
 #define _WIN32_WINNT _WIN32_WINNT_WIN10
 #define WINVER _WIN32_WINNT_WIN10
-#define _UCRT
 
-#undef UNICODE
-#undef _UNICODE
+// clang-format off
+#ifdef UNICODE
+#  undef UNICODE
+#endif // UNICODE
+
+#ifdef _UNICODE
+#  undef _UNICODE
+#endif // _UNICODE
+// clang-format on
 
 #include <stdint.h>
 #include <stdio.h>
@@ -12,6 +22,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Shlobj.h>
 
+#define FLAGS_CAP 4
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
 
@@ -96,7 +107,6 @@ int main(int argc, char **argv) {
     }
 
     nob_da_reserve(&tmpPath, MAX_PATH + 1);
-    assert(tmpPath.capacity > 0);
 
     if (!parse_config_file())
         nob_return_defer(1);
@@ -218,7 +228,6 @@ int main(int argc, char **argv) {
                 ITEMIDLIST idNull = { 0 };
                 LPCITEMIDLIST pidlNull[1] = { &idNull };
                 hr = SHOpenFolderAndSelectItems(pidl, 1, pidlNull, 0);
-
                 if (hr != S_OK) {
                     nob_log(NOB_ERROR, "SHOpenFolderAndSelectItems falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
                 }
@@ -233,6 +242,10 @@ int main(int argc, char **argv) {
     }
 
 defer:
+    if (result == 0)
+        MessageBoxA(NULL, "Todos os programas foram baixados/instalados com sucesso", "Sucesso...",
+                    MB_TOPMOST | MB_OK | MB_ICONINFORMATION);
+
     for (size_t i = 0; i < extra_resources.count; ++i) {
         free((void *)extra_resources.items[i].fileName);
         free((void *)extra_resources.items[i].url);
@@ -244,9 +257,6 @@ defer:
     nob_da_free(extra_resources);
     nob_sb_free(tmpPath);
     nob_cmd_free(cmd);
-
-    MessageBoxA(NULL, "Todos os programas foram instalados com sucesso", "Sucesso...",
-                MB_TOPMOST | MB_OK | MB_ICONINFORMATION | MB_DEFBUTTON1);
 
     return result;
 }
@@ -390,7 +400,7 @@ bool get_java_link(bool skipInstall) {
     cmd.count = 0;
     const char *htmlFile = nob_temp_sprintf(SV_Fmt JDL_FILE, (int)tmpPath.count, tmpPath.items);
 
-    nob_cmd_append(&cmd, "curl", "-L", "-o", htmlFile, "\"" JDL_URL "\"", "-H", "\"User-Agent:", "Wget/1.25.0\"");
+    nob_cmd_append(&cmd, "curl", "-L", "-o", htmlFile, "\"" JDL_URL "\"", "-H", "User-Agent: Wget/1.25.0");
     if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", JDL_FILE);
         nob_return_defer(false);
@@ -490,21 +500,17 @@ bool parse_config_file(void) {
     bool result = true;
 
     // Parse config.csv file
-    assert(tmpPath.capacity > MAX_PATH);
-
     SetLastError(ERROR_SUCCESS);
-    DWORD rst = GetModuleFileNameA(NULL, tmpPath.items, tmpPath.capacity);
-    if (!rst) { // Get .exe file path
-        nob_log(NOB_ERROR, "GetModuleFileNameA failed: %s", nob_win32_error_message(GetLastError()));
-        nob_return_defer(false);
-    } else if (GetLastError()) {
+    DWORD rst = GetModuleFileNameA(NULL, tmpPath.items, tmpPath.capacity); // Get .exe file path
+    if (!rst || GetLastError()) {
         nob_log(NOB_ERROR, "GetModuleFileNameA failed: %s", nob_win32_error_message(GetLastError()));
         nob_return_defer(false);
     }
+
     tmpPath.count = rst - strlen(nob_path_name(tmpPath.items));
     nob_sb_append_cstr(&tmpPath, CFG_FILE);
     nob_sb_append_null(&tmpPath);
-    printf("Config FIle Path: '%.*s'\n", (int)tmpPath.count, tmpPath.items);
+    nob_log(NOB_INFO, "Config File Path: '%.*s'", (int)tmpPath.count, tmpPath.items);
 
     Nob_String_Builder sb = { 0 };
     if (nob_file_exists(tmpPath.items) < 1) {

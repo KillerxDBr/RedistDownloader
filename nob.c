@@ -5,12 +5,22 @@
 #define NTDDI_VERSION NTDDI_WIN10
 #define _WIN32_WINNT _WIN32_WINNT_WIN10
 #define WINVER _WIN32_WINNT_WIN10
-#define _UCRT
+
+// clang-format off
+#ifdef UNICODE
+#  undef UNICODE
+#endif // UNICODE
+
+#ifdef _UNICODE
+#  undef _UNICODE
+#endif // _UNICODE
+// clang-format on
 
 #define NOB_STRIP_PREFIX
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
+#define FLAGS_CAP 4
 #define FLAG_IMPLEMENTATION
 #include "flag.h"
 
@@ -91,20 +101,25 @@ int main(int argc, char **argv) {
 
     if (*clean) {
         if (!nob_delete_file(RES_FILE) || !nob_delete_file("RedistDownloader.exe"))
-            nob_return_defer(1);
+            return_defer(1);
         *force = true;
     }
 
     if (*force || nob_needs_rebuild(RES_FILE, (const char *[]){ "resource.rc", "manifest.xml" }, 2) != 0) {
         cmd_append(&cmd, RES, RES_OUT(RES_FILE), "resource.rc");
-        if (!cmd_run_sync_and_reset(&cmd))
-            return_defer(1);
+        if (!cmd_run_sync_and_reset(&cmd)) {
+            nob_log(NOB_ERROR, "Could not generate '%s' file", RES_FILE);
+            return_defer(2);
+        }
     }
 
-    if (*force || nob_needs_rebuild("RedistDownloader.exe", (const char *[]){ "RedistDownloader.c", RES_FILE }, 2) != 0) {
+    const char *deps[] = { "RedistDownloader.c", RES_FILE, "nob.h", "flag.h" };
+    if (*force || nob_needs_rebuild("RedistDownloader.exe", deps, NOB_ARRAY_LEN(deps)) != 0) {
         cmd_append(&cmd, CC, INC_PATH("include/"), OUT_PATH("RedistDownloader.exe"), "RedistDownloader.c", RES_FILE, CLIBS, CFLAGS);
-        if (!cmd_run_sync_and_reset(&cmd))
-            return_defer(1);
+        if (!cmd_run_sync_and_reset(&cmd)) {
+            nob_log(NOB_ERROR, "Could not compile source files");
+            return_defer(3);
+        }
     }
 
 defer:
