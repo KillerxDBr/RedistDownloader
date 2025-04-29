@@ -29,10 +29,17 @@
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
+typedef enum {
+    ENTRY_LINK = 0,
+    ENTRY_EXE,
+    ENTRY_UNDEFINED,
+} EntryType;
+
 typedef struct {
     const char *fileName;
     const char *url;
     const char *args;
+    EntryType type;
 } Resource;
 
 typedef struct {
@@ -355,6 +362,8 @@ bool get_extra_resources(bool skipInstall) {
 
     char *exe;
     for (size_t i = 0; i < extra_resources.count; ++i) {
+        if (extra_resources.items[i].type != ENTRY_LINK)
+            continue;
         exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, extra_resources.items[i].fileName);
         nob_cmd_append(&cmd, "curl", "-o", exe, "-L", extra_resources.items[i].url);
         if (!nob_cmd_run_sync_and_reset(&cmd)) {
@@ -367,7 +376,18 @@ bool get_extra_resources(bool skipInstall) {
         const size_t tmpBk = nob_temp_save();
         for (size_t i = 0; i < extra_resources.count; ++i) {
             nob_temp_rewind(tmpBk);
-            exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, extra_resources.items[i].fileName);
+
+            switch (extra_resources.items[i].type) {
+            case ENTRY_EXE:
+                exe = (char *)extra_resources.items[i].fileName;
+                break;
+            case ENTRY_LINK:
+                exe = nob_temp_sprintf(SV_Fmt "%s", (int)tmpPath.count, tmpPath.items, extra_resources.items[i].fileName);
+                break;
+            default:
+                NOB_UNREACHABLE("get_extra_resources");
+                break;
+            }
 
             nob_cmd_append(&cmd, exe);
             if (extra_resources.items[i].args && *extra_resources.items[i].args) {
@@ -514,10 +534,12 @@ bool parse_config_file(void) {
 
     Nob_String_Builder sb = { 0 };
     if (nob_file_exists(tmpPath.items) < 1) {
-        const char *cfgHeader = "# Linhas que começam com '#' sao ignoradas,,\n"
-                                "# Para links extras, adicione nesse arquivo,\n"
-                                "# Nome Do Executavel, Link de Download, Argumentos da linha de comando (opcional)\n"
-                                "# vcredist_2015_x64.exe, https://aka.ms/vs/17/release/vc_redist.x64.exe, /install /quiet /norestart\n";
+        const char *cfgHeader
+            = "# Linhas que começam com '#' sao ignoradas,,\n"
+              "# Para links extras, adicione nesse arquivo,\n"
+              "# Tipo(link/exe), Nome Do Executavel, Link de Download, Argumentos da linha de comando (opcional)\n"
+              "# link, vcredist_2015_x64.exe, https://aka.ms/vs/17/release/vc_redist.x64.exe, /install /quiet /norestart\n"
+              "# exe, C:\\Redists\\2015\\vcredist_2015_x64.exe, , /install /quiet /norestart";
         if (!nob_write_entire_file(tmpPath.items, cfgHeader, strlen(cfgHeader))) {
             nob_return_defer(false);
         }
@@ -526,49 +548,61 @@ bool parse_config_file(void) {
         if (!nob_read_entire_file(tmpPath.items, &sb)) {
             nob_return_defer(false);
         }
-        Nob_String_View sv = nob_sv_trim(nob_sb_to_sv(sb));
-        Nob_String_View sv2;
-        Nob_String_View sv3;
+        Nob_String_View content = nob_sv_trim(nob_sb_to_sv(sb));
+        Nob_String_View line;
+        Nob_String_View value;
         Resource r;
 
         // for (int i = 1; ; ++i) {
-        while (sv.count) {
+        while (content.count) {
             memset(&r, 0, sizeof(r));
 
-            sv2 = nob_sv_trim(nob_sv_chop_by_delim(&sv, '\n'));
+            line = nob_sv_trim(nob_sv_chop_by_delim(&content, '\n'));
 
             // printf("Line %02d: '" SV_Fmt "' -> %s\n", i, SV_Arg(sv2), (*sv2.data == '#') ? "Skipping Line..." : "Processing Line");
 
-            if (*sv2.data == '#')
+            if (*line.data == '#')
                 continue;
 
-            Nob_String_View fileName;
-            Nob_String_View url;
-            Nob_String_View args;
-
-            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
-            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
-            if (sv3.count == 0)
+            value = nob_sv_trim(nob_sv_chop_by_delim(&line, ','));
+            // printf("type: '" SV_Fmt "'\n", SV_Arg(value));
+            if (value.count == 0)
                 continue;
-            fileName = sv3;
 
-            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
-            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
-            if (sv3.count == 0)
+            if (nob_sv_eq(value, SV("link")))
+                r.type = ENTRY_LINK;
+            else if (nob_sv_eq(value, SV("exe")))
+                r.type = ENTRY_EXE;
+            else
+                r.type = ENTRY_UNDEFINED;
+
+            assert(r.type < ENTRY_UNDEFINED);
+
+            value = nob_sv_trim(nob_sv_chop_by_delim(&line, ','));
+            // printf("fileName: '" SV_Fmt "'\n", SV_Arg(value));
+            if (value.count == 0)
                 continue;
-            url = sv3;
+            r.fileName = nob_sv_to_cstr(value);
 
-            sv3 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, ','));
-            // printf("'" SV_Fmt "'\n", SV_Arg(sv3));
-            args = sv3;
+            value = nob_sv_trim(nob_sv_chop_by_delim(&line, ','));
+            // printf("url: '" SV_Fmt "'\n", SV_Arg(value));
+            if (r.type == ENTRY_LINK) {
+                if (!value.count)
+                    continue;
+                r.url = nob_sv_to_cstr(value);
+            } else {
+                r.url = NULL;
+            }
 
-            r.fileName = nob_sv_to_cstr(fileName);
-            r.url = nob_sv_to_cstr(url);
-            r.args = args.count ? nob_sv_to_cstr(args) : NULL;
+            value = nob_sv_trim(nob_sv_chop_by_delim(&line, ','));
+            // printf("args: '" SV_Fmt "'\n", SV_Arg(value));
+            r.args = value.count ? nob_sv_to_cstr(value) : NULL;
 
             nob_da_append(&extra_resources, r);
             // puts("----------------------------------");
         }
+        // system("pause");
+        // exit(0);
     }
 
 defer:
