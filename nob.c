@@ -6,13 +6,15 @@
 #define _WIN32_WINNT _WIN32_WINNT_WIN10
 #define WINVER _WIN32_WINNT_WIN10
 
+#define _CRT_SECURE_NO_WARNINGS
+
 // clang-format off
-#ifdef UNICODE
-#  undef UNICODE
+#ifndef UNICODE
+#  define UNICODE
 #endif // UNICODE
 
-#ifdef _UNICODE
-#  undef _UNICODE
+#ifndef _UNICODE
+#  define _UNICODE
 #endif // _UNICODE
 // clang-format on
 
@@ -26,11 +28,11 @@
 
 // clang-format off
 #if defined(_MSC_VER)
-#  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib"
+#  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib", "user32.lib"
 #  define CFLAGS "/W4", "/O2", "/nologo", "/D_CRT_SECURE_NO_WARNINGS"
 #else
-#  define CLIBS "-lshell32", "-lkernel32", "-lole32"
-#  define CFLAGS "-Wall", "-Wextra", "-march=nocona", "-mtune=generic", "-O2", "-s"
+#  define CLIBS "-lshell32", "-lkernel32", "-lole32", "luser32"
+#  define CFLAGS "-Wall", "-Wextra", "-march=nocona", "-mtune=generic", "-O2", "-s", "-D_CRT_SECURE_NO_WARNINGS"
 #endif
 
 #if defined(_MSC_VER)

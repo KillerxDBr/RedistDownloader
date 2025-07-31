@@ -7,15 +7,16 @@
 #define WINVER _WIN32_WINNT_WIN10
 
 // clang-format off
-#ifdef UNICODE
-#  undef UNICODE
+#ifndef UNICODE
+#  define UNICODE
 #endif // UNICODE
 
-#ifdef _UNICODE
-#  undef _UNICODE
+#ifndef _UNICODE
+#  define _UNICODE
 #endif // _UNICODE
 // clang-format on
 
+#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -81,10 +82,11 @@ Resources extra_resources = { 0 };
 
 bool IsExeInPath(const char *exe);
 int64_t get_file_size(const char *path);
-bool delete_folder_recursively(const char *path);
+bool delete_dir_recusive(const char *path);
 bool get_java_link(bool skipInstall);
 bool get_extra_resources(bool skipInstall);
 bool parse_config_file(void);
+bool open_folder_in_explorer(const char *path);
 
 void usage(FILE *stream) {
     fprintf(stream, "Usage: ./RedistDownloader [OPTIONS]\n");
@@ -95,6 +97,8 @@ void usage(FILE *stream) {
 #define CFG_FILE "config.csv"
 
 int main(int argc, char **argv) {
+    setlocale(LC_CTYPE, ".UTF8");
+
     int result = 0;
 
     bool *skipInstall = flag_bool("s", false, "Skip instalation");
@@ -133,7 +137,7 @@ int main(int argc, char **argv) {
     nob_sb_append_null(&tmpPath);
 
     if (nob_file_exists(tmpPath.items) > 0) {
-        delete_folder_recursively(tmpPath.items);
+        delete_dir_recusive(tmpPath.items);
     }
 
     if (!nob_mkdir_if_not_exists(tmpPath.items)) {
@@ -212,46 +216,29 @@ int main(int argc, char **argv) {
     tmpPath.count = rootTmpCount;
     if (!*skipInstall) {
         nob_sb_append_null(&tmpPath);
-        delete_folder_recursively(tmpPath.items);
+        delete_dir_recusive(tmpPath.items);
     } else {
         nob_log(NOB_INFO, "Arquivos baixados salvos em: \"%s\"", tmpPath.items);
 
         nob_sb_append_cstr(&tmpPath, DL_DIR);
         nob_sb_append_null(&tmpPath);
 
-        HRESULT hr = CoInitialize(NULL);
-        if (SUCCEEDED(hr)) {
-            wchar_t *wstr_path = nob_temp_alloc(tmpPath.count * sizeof(wchar_t));
-
-            if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmpPath.items, -1, wstr_path, tmpPath.count)) {
-                nob_log(NOB_ERROR, "MultiByteToWideChar failed: %s", nob_win32_error_message(GetLastError()));
-                CoUninitialize();
-                nob_return_defer(0);
-            }
-
-            PIDLIST_ABSOLUTE pidl;
-            hr = SHParseDisplayName(wstr_path, 0, &pidl, 0, 0);
-            if (hr == S_OK) {
-                ITEMIDLIST idNull = { 0 };
-                LPCITEMIDLIST pidlNull[1] = { &idNull };
-                hr = SHOpenFolderAndSelectItems(pidl, 1, pidlNull, 0);
-                if (hr != S_OK) {
-                    nob_log(NOB_ERROR, "SHOpenFolderAndSelectItems falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
-                }
-                ILFree(pidl);
-            } else {
-                nob_log(NOB_ERROR, "SHParseDisplayName falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
-            }
-            CoUninitialize();
-        } else {
-            nob_log(NOB_ERROR, "Nao foi possivel iniciar COM: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+        if (!open_folder_in_explorer(tmpPath.items)) {
+            const char *msg = nob_temp_sprintf("Abra manualmente a pasta \"%s\"", tmpPath.items);
+            if (msg != NULL)
+                MessageBoxA(NULL, msg, "ERRO: Nao foi possivel abrir pasta", MB_TOPMOST | MB_OK | MB_ICONERROR);
+            else
+                MessageBoxA(NULL, "Nao foi possivel abrir pasta de arquivos", "Erro", MB_TOPMOST | MB_OK | MB_ICONERROR);
         }
     }
 
 defer:
-    if (result == 0)
-        MessageBoxA(NULL, "Todos os programas foram baixados/instalados com sucesso", "Sucesso...",
+    if (result == 0) {
+        MessageBoxW(NULL, L"Todos os programas foram baixados/instalados com sucesso", L"Sucesso...",
                     MB_TOPMOST | MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(NULL, L"Nem todos os programas foram instalados com sucesso", L"Erro...", MB_TOPMOST | MB_OK | MB_ICONERROR);
+    }
 
     for (size_t i = 0; i < extra_resources.count; ++i) {
         free((void *)extra_resources.items[i].fileName);
@@ -265,11 +252,13 @@ defer:
     nob_sb_free(tmpPath);
     nob_cmd_free(cmd);
 
+    system("pause");
+
     return result;
 }
 
 bool IsExeInPath(const char *exe) {
-    Nob_Cmd cmd = { 0 };
+    Nob_Cmd cmdFinder = { 0 };
     Nob_Cmd_Redirect cr = { 0 };
 
     Nob_Fd nullOutput = nob_fd_open_for_write("NUL");
@@ -279,8 +268,8 @@ bool IsExeInPath(const char *exe) {
         cr.fdout = &nullOutput;
         cr.fderr = &nullOutput;
     }
-    nob_cmd_append(&cmd, "where.exe", "/Q", exe);
-    bool result = nob_cmd_run_sync_redirect(cmd, cr);
+    nob_cmd_append(&cmdFinder, "where.exe", "/Q", exe);
+    bool result = nob_cmd_run_sync_redirect(cmdFinder, cr);
 
     if (result) {
         nob_log(NOB_INFO, "\"%s\" encontrado no PATH", exe);
@@ -291,7 +280,7 @@ bool IsExeInPath(const char *exe) {
     if (nullOutput != NOB_INVALID_FD)
         nob_fd_close(nullOutput);
 
-    nob_cmd_free(cmd);
+    nob_cmd_free(cmdFinder);
 
     return result;
 }
@@ -326,31 +315,74 @@ defer:
     return result;
 }
 
-bool delete_folder_recursively(const char *path) {
-    SHFILEOPSTRUCTA sf;
-    memset(&sf, 0, sizeof(sf));
-
+bool delete_dir_recusive(const char *path) {
+    bool result = true;
+    Nob_File_Paths fp = { 0 };
     Nob_String_Builder sb = { 0 };
+
+    nob_log(NOB_INFO, "deleting '%s' recursively", path);
+
+    if (nob_file_exists(path) < 1)
+        nob_return_defer(true);
+
+    Nob_File_Type type = nob_get_file_type(path);
+    switch (type) {
+    case NOB_FILE_REGULAR:
+        nob_return_defer(nob_delete_file(path));
+        break;
+    case NOB_FILE_DIRECTORY:
+        break;
+    default:
+        nob_log(NOB_ERROR, "Invalid file type for '%s'", path);
+        nob_return_defer(false);
+        break;
+    }
+
+    if (!nob_read_entire_dir(path, &fp)) {
+        nob_return_defer(false);
+    }
+
     nob_sb_append_cstr(&sb, path);
 
-    nob_sb_append_null(&sb);
-    nob_sb_append_null(&sb);
+    if (sb.items[sb.count - 1] != '/' && sb.items[sb.count - 1] != '\\')
+        nob_sb_append_cstr(&sb, "/");
 
-    sf.wFunc = FO_DELETE;
+    const size_t sb_cp = sb.count;
 
-    sf.pFrom = sb.items;
-    sf.fFlags = FOF_NO_UI;
+    for (size_t i = 0; i < fp.count; ++i) {
+        if (memcmp(fp.items[i], ".", sizeof(".")) == 0)
+            continue;
+        if (memcmp(fp.items[i], "..", sizeof("..")) == 0)
+            continue;
 
-    // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shfileoperationa#return-value
-    int rst = SHFileOperationA(&sf); // This shit return some pre Win32 errors... THANK YOU MICROSOFT
+        sb.count = sb_cp;
+        nob_sb_append_cstr(&sb, fp.items[i]);
+        nob_sb_append_null(&sb);
 
-    if (rst)
-        nob_log(NOB_ERROR, "SHFileOperationA failed: 0x%X", rst);
+        type = nob_get_file_type(sb.items);
+        switch (type) {
+        case NOB_FILE_REGULAR:
+            if (!nob_delete_file(sb.items))
+                nob_return_defer(false);
+            break;
+        case NOB_FILE_DIRECTORY:
+            if (!delete_dir_recusive(sb.items))
+                nob_return_defer(false);
+            break;
+        default:
+            nob_log(NOB_WARNING, "Invalid file type for '%s', skipping...", sb.items);
+            break;
+        }
+    }
 
+    result = nob_delete_dir(path);
+
+defer:
+    nob_da_free(fp);
     nob_sb_free(sb);
-
-    return rst == 0;
+    return result;
 }
+
 #define JDL_FILE "manual.jsp"
 #define JDL_URL "www.java.com/pt-br/download/manual.jsp"
 
@@ -420,7 +452,7 @@ bool get_java_link(bool skipInstall) {
     cmd.count = 0;
     const char *htmlFile = nob_temp_sprintf(SV_Fmt JDL_FILE, (int)tmpPath.count, tmpPath.items);
 
-    nob_cmd_append(&cmd, "curl", "-L", "-o", htmlFile, "\"" JDL_URL "\"", "-H", "User-Agent: Wget/1.25.0");
+    nob_cmd_append(&cmd, "curl", "-L", "-o", htmlFile, JDL_URL, "-H", "User-Agent: Wget/1.25.0");
     if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_log(NOB_ERROR, "Nao foi possivel fazer o download do arquivo '%s'", JDL_FILE);
         nob_return_defer(false);
@@ -444,8 +476,8 @@ bool get_java_link(bool skipInstall) {
                       SV("Instruções de instalação do software Java para Windows On-line")); // <div class="rw-inpagetab" id="jre8-windows">
 
     Nob_String_View sv2;
-    Nob_String_View x86jre = { 0 };
-    Nob_String_View x64jre = { 0 };
+    Nob_String_View x86jre = {};
+    Nob_String_View x64jre = {};
 
     while (sv2 = nob_sv_chop_by_sv(&sv, SV("<td><a href=")), sv.count > 0) {
         sv2 = nob_sv_trim(nob_sv_chop_by_delim(&sv2, '\n'));
@@ -518,21 +550,28 @@ const char *nob_sv_to_cstr(Nob_String_View sv) {
 
 bool parse_config_file(void) {
     bool result = true;
+    Nob_String_Builder sb = {};
 
     // Parse config.csv file
     SetLastError(ERROR_SUCCESS);
-    DWORD rst = GetModuleFileNameA(NULL, tmpPath.items, tmpPath.capacity); // Get .exe file path
-    if (!rst || GetLastError()) {
-        nob_log(NOB_ERROR, "GetModuleFileNameA failed: %s", nob_win32_error_message(GetLastError()));
+
+    WCHAR wPath[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, wPath, MAX_PATH)) {
+        nob_log(NOB_ERROR, "GetModuleFileNameW failed: %s", nob_win32_error_message(GetLastError()));
         nob_return_defer(false);
     }
 
-    tmpPath.count = rst - strlen(nob_path_name(tmpPath.items));
+    size_t rst = WideCharToMultiByte(CP_UTF8, 0, wPath, -1, tmpPath.items, tmpPath.capacity, NULL, NULL);
+    if (!rst) {
+        nob_log(NOB_ERROR, "WideCharToMultiByte failed: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    }
+
+    tmpPath.count = nob_path_name(tmpPath.items) - tmpPath.items;
     nob_sb_append_cstr(&tmpPath, CFG_FILE);
     nob_sb_append_null(&tmpPath);
     nob_log(NOB_INFO, "Config File Path: '%.*s'", (int)tmpPath.count, tmpPath.items);
 
-    Nob_String_Builder sb = { 0 };
     if (nob_file_exists(tmpPath.items) < 1) {
         const char *cfgHeader
             = "# Linhas que começam com '#' sao ignoradas,,\n"
@@ -607,5 +646,52 @@ bool parse_config_file(void) {
 
 defer:
     nob_sb_free(sb);
+    return result;
+}
+
+bool open_folder_in_explorer(const char *path) {
+    bool result = true;
+    PIDLIST_ABSOLUTE pidl = NULL;
+
+    HRESULT hr = CoInitialize(NULL);
+    if (SUCCEEDED(hr)) {
+        int wsz = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+        if (!wsz) {
+            nob_log(NOB_ERROR, "MultiByteToWideChar failed: %s", nob_win32_error_message(GetLastError()));
+            nob_return_defer(false);
+        }
+
+        wchar_t *wstr_path = nob_temp_alloc(wsz * sizeof(wchar_t));
+        assert(wstr_path != NULL);
+
+        if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wstr_path, wsz)) {
+            nob_log(NOB_ERROR, "MultiByteToWideChar failed: %s", nob_win32_error_message(GetLastError()));
+            nob_return_defer(false);
+        }
+
+        hr = SHParseDisplayName(wstr_path, 0, &pidl, 0, 0);
+        if (hr == S_OK) {
+            ITEMIDLIST idNull = { 0 };
+            LPCITEMIDLIST pidlNull[1] = { &idNull };
+            hr = SHOpenFolderAndSelectItems(pidl, 1, pidlNull, 0);
+            if (hr != S_OK) {
+                nob_log(NOB_ERROR, "SHOpenFolderAndSelectItems falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+                nob_return_defer(false);
+            }
+
+        } else {
+            nob_log(NOB_ERROR, "SHParseDisplayName falhou: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+            nob_return_defer(false);
+        }
+    } else {
+        nob_log(NOB_ERROR, "Nao foi possivel iniciar COM: %s", nob_win32_error_message(HRESULT_FROM_WIN32(hr)));
+        nob_return_defer(false);
+    }
+
+defer:
+    if (pidl)
+        ILFree(pidl);
+
+    CoUninitialize();
     return result;
 }
