@@ -7,6 +7,7 @@
 #define WINVER _WIN32_WINNT_WIN10
 
 #define _CRT_SECURE_NO_WARNINGS
+#pragma comment(lib, "shell32.lib") // CommandLineToArgvW in nob_win32_uft8_cmdline_args
 
 // clang-format off
 #ifndef UNICODE
@@ -17,6 +18,8 @@
 #  define _UNICODE
 #endif // _UNICODE
 // clang-format on
+
+#include <locale.h>
 
 #define NOB_STRIP_PREFIX
 #define NOB_IMPLEMENTATION
@@ -75,17 +78,30 @@
 // clang-format on
 
 void usage(FILE *stream) {
-    fprintf(stream, "Usage: ./RedistDownloader [OPTIONS]\n");
+    fprintf(stream, "Usage: %s [OPTIONS]\n", flag_program_name());
     fprintf(stream, "OPTIONS:\n");
     flag_print_options(stream);
 }
 
 int main(int argc, char **argv) {
+    setlocale(LC_CTYPE, ".UTF8");
+
+    {
+        int bkp_argc = argc;
+        char **bkp_argv = argv;
+
+        if (!nob_win32_uft8_cmdline_args(&argc, &argv)) {
+            nob_log(NOB_WARNING, "Could not generate Win32 UTF-8 Command Line Arguments, using default...");
+            argc = bkp_argc;
+            argv = bkp_argv;
+        }
+    }
+
     NOB_GO_REBUILD_URSELF_PLUS(argc, argv, "nob.h");
 
     bool *force = flag_bool("f", false, "Force Rebuild");
     bool *clean = flag_bool("c", false, "Clean build artifacts");
-    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
+    bool *help = flag_bool("h", false, "Print this help to stdout and exit with 0");
 
     if (!flag_parse(argc, argv)) {
         usage(stderr);
@@ -108,7 +124,7 @@ int main(int argc, char **argv) {
     }
 
     if (*force || nob_needs_rebuild(RES_FILE, (const char *[]){ "resource.rc", "manifest.xml" }, 2) != 0) {
-        cmd_append(&cmd, RES, RES_OUT(RES_FILE), "resource.rc");
+        cmd_append(&cmd, RES, "/nologo", "/8", "/d", "UNICODE", "/d", "_UNICODE", RES_OUT(RES_FILE), "resource.rc");
         if (!cmd_run_sync_and_reset(&cmd)) {
             nob_log(NOB_ERROR, "Could not generate '%s' file", RES_FILE);
             return_defer(2);

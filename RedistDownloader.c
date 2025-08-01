@@ -89,7 +89,7 @@ bool parse_config_file(void);
 bool open_folder_in_explorer(const char *path);
 
 void usage(FILE *stream) {
-    fprintf(stream, "Usage: ./RedistDownloader [OPTIONS]\n");
+    fprintf(stream, "Usage: %s [OPTIONS]\n", flag_program_name());
     fprintf(stream, "OPTIONS:\n");
     flag_print_options(stream);
 }
@@ -99,10 +99,21 @@ void usage(FILE *stream) {
 int main(int argc, char **argv) {
     setlocale(LC_CTYPE, ".UTF8");
 
+    {
+        int bkp_argc = argc;
+        char **bkp_argv = argv;
+
+        if (!nob_win32_uft8_cmdline_args(&argc, &argv)) {
+            nob_log(NOB_WARNING, "Could not generate Win32 UTF-8 Command Line Arguments, using default...");
+            argc = bkp_argc;
+            argv = bkp_argv;
+        }
+    }
+
     int result = 0;
 
     bool *skipInstall = flag_bool("s", false, "Skip instalation");
-    bool *help = flag_bool("help", false, "Print this help to stdout and exit with 0");
+    bool *help = flag_bool("h", false, "Print this help to stdout and exit with 0");
 
     if (!flag_parse(argc, argv)) {
         usage(stderr);
@@ -552,37 +563,37 @@ bool parse_config_file(void) {
     bool result = true;
     Nob_String_Builder sb = {};
 
+#if 0
     // Parse config.csv file
-    SetLastError(ERROR_SUCCESS);
-
     WCHAR wPath[MAX_PATH];
     if (!GetModuleFileNameW(NULL, wPath, MAX_PATH)) {
         nob_log(NOB_ERROR, "GetModuleFileNameW failed: %s", nob_win32_error_message(GetLastError()));
         nob_return_defer(false);
     }
 
-    size_t rst = WideCharToMultiByte(CP_UTF8, 0, wPath, -1, tmpPath.items, tmpPath.capacity, NULL, NULL);
+    size_t rst = WideCharToMultiByte(CP_UTF8, 0, wPath, -1, tmpPath.items, (int)tmpPath.capacity, NULL, NULL);
     if (!rst) {
         nob_log(NOB_ERROR, "WideCharToMultiByte failed: %s", nob_win32_error_message(GetLastError()));
         nob_return_defer(false);
     }
-
+#else
+    nob_sb_append_cstr(&tmpPath, flag_program_name());
+#endif
     tmpPath.count = nob_path_name(tmpPath.items) - tmpPath.items;
     nob_sb_append_cstr(&tmpPath, CFG_FILE);
     nob_sb_append_null(&tmpPath);
-    nob_log(NOB_INFO, "Config File Path: '%.*s'", (int)tmpPath.count, tmpPath.items);
+    nob_log(NOB_INFO, "Config File Path: '%s'", tmpPath.items);
 
     if (nob_file_exists(tmpPath.items) < 1) {
-        const char *cfgHeader
+        const char cfgHeader[]
             = "# Linhas que começam com '#' sao ignoradas,,\n"
               "# Para links extras, adicione nesse arquivo,\n"
               "# Tipo(link/exe), Nome Do Executavel, Link de Download, Argumentos da linha de comando (opcional)\n"
               "# link, vcredist_2015_x64.exe, https://aka.ms/vs/17/release/vc_redist.x64.exe, /install /quiet /norestart\n"
-              "# exe, C:\\Redists\\2015\\vcredist_2015_x64.exe, , /install /quiet /norestart";
-        if (!nob_write_entire_file(tmpPath.items, cfgHeader, strlen(cfgHeader))) {
+              "# exe, C:\\Redists\\2015\\vcredist_2015_x64.exe, , /install /quiet /norestart\n";
+        if (!nob_write_entire_file(tmpPath.items, cfgHeader, sizeof(cfgHeader) - 1)) {
             nob_return_defer(false);
         }
-        nob_return_defer(true);
     } else {
         if (!nob_read_entire_file(tmpPath.items, &sb)) {
             nob_return_defer(false);
@@ -594,8 +605,6 @@ bool parse_config_file(void) {
 
         // for (int i = 1; ; ++i) {
         while (content.count) {
-            memset(&r, 0, sizeof(r));
-
             line = nob_sv_trim(nob_sv_chop_by_delim(&content, '\n'));
 
             // printf("Line %02d: '" SV_Fmt "' -> %s\n", i, SV_Arg(sv2), (*sv2.data == '#') ? "Skipping Line..." : "Processing Line");
@@ -607,6 +616,8 @@ bool parse_config_file(void) {
             // printf("type: '" SV_Fmt "'\n", SV_Arg(value));
             if (value.count == 0)
                 continue;
+
+            memset(&r, 0, sizeof(r));
 
             if (nob_sv_eq(value, SV("link")))
                 r.type = ENTRY_LINK;
