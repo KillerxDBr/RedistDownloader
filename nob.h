@@ -707,6 +707,7 @@ static int closedir(DIR *dirp);
 #ifdef _WIN32
 
 const char *nob_win32_error_message(DWORD err);
+bool nob_win32_uft8_cmdline_args(int *argc, char ***argv_ptr);
 
 #endif // _WIN32
 
@@ -759,6 +760,87 @@ const char *nob_win32_error_message(DWORD err) {
     }
 
     return win32ErrMsg;
+}
+
+// #define NOSHELLDLL
+bool nob_win32_uft8_cmdline_args(int *argc, char ***argv_ptr) {
+    bool result     = true;
+    char **argv     = NULL;
+    wchar_t **wargv = NULL;
+
+#ifdef NOSHELLDLL
+    typedef wchar_t **(__stdcall * CL2AW)(wchar_t *, int *);
+    CL2AW pfn_CommandLineToArgvW = NULL;
+
+    HMODULE s32dll = LoadLibraryW(L"shell32.dll");
+    if (s32dll == NULL) {
+        nob_log(NOB_ERROR, "Could not load shell32 library: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    }
+
+#if !defined(_MSC_VER)
+// Disabling Function cast warning in GCC, since its the intended use of GetProcAddress
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+
+    pfn_CommandLineToArgvW = (CL2AW)GetProcAddress(s32dll, "CommandLineToArgvW");
+
+#if !defined(_MSC_VER)
+#pragma GCC diagnostic pop
+#endif
+
+    if (pfn_CommandLineToArgvW == NULL) {
+        nob_log(NOB_ERROR, "Could not load CommandLineToArgvW function: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    }
+
+    wargv = pfn_CommandLineToArgvW(GetCommandLineW(), argc);
+#else
+    wargv = CommandLineToArgvW(GetCommandLineW(), argc);
+#endif
+    if (wargv == NULL) {
+        nob_log(NOB_ERROR, "CommandLineToArgvW failed: %s", nob_win32_error_message(GetLastError()));
+        nob_return_defer(false);
+    }
+
+    argv = nob_temp_alloc((*argc + 1) * sizeof(char *));
+    if (argv == NULL) {
+        nob_log(NOB_ERROR, "Could not allocate memory from temporary buffer");
+        nob_return_defer(false);
+    }
+
+    for (int i = 0; i < *argc; ++i) {
+        int charCount = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (charCount == 0 || (size_t)charCount > (NOB_TEMP_CAPACITY - nob_temp_save())) {
+            DWORD err = GetLastError();
+            nob_log(NOB_ERROR, "Could not convert Command line argument to C String: %s",
+                    nob_win32_error_message(err ? err : ERROR_INSUFFICIENT_BUFFER));
+            nob_return_defer(false);
+        }
+
+        argv[i] = nob_temp_alloc(charCount);
+        if (argv[i] == NULL)
+            nob_return_defer(false);
+
+        if (WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], charCount, NULL, NULL) == 0) {
+            nob_log(NOB_ERROR, "Could not convert Command line argument to C String: %s",
+                    nob_win32_error_message(GetLastError()));
+            nob_return_defer(false);
+        }
+    }
+
+    argv[*argc] = NULL; // argv[argc] == NULL
+    *argv_ptr   = argv;
+
+defer:
+#ifdef NOSHELLDLL
+    if (s32dll)
+        FreeLibrary(s32dll);
+#endif
+    if (wargv)
+        LocalFree(wargv);
+    return result;
 }
 
 #endif // _WIN32
