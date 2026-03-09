@@ -30,15 +30,15 @@
 #include "flag.h"
 
 // clang-format off
-#if defined(_MSC_VER)
-#  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib", "user32.lib"
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define CLIBS "shell32.lib", "kernel32.lib", "ole32.lib", "user32.lib", "shlwapi.lib"
 #  define CFLAGS "/W4", "/O2", "/nologo", "/D_CRT_SECURE_NO_WARNINGS"
 #else
-#  define CLIBS "-lshell32", "-lkernel32", "-lole32", "luser32"
-#  define CFLAGS "-Wall", "-Wextra", "-march=nocona", "-mtune=generic", "-O2", "-s", "-D_CRT_SECURE_NO_WARNINGS"
+#  define CLIBS "-lshell32", "-lkernel32", "-lole32", "-luser32", "-lshlwapi"
+#  define CFLAGS "-Wall", "-Wextra", "-O2", "-D_CRT_SECURE_NO_WARNINGS"
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #  ifndef CC
 #    define CC "cl"
 #  endif // CC
@@ -69,11 +69,19 @@
 #  define OUT_PATH(path) "-o", path
 
 #  ifndef RES
-#    define RES "windres"
+#    if defined(__GNUC__)
+#      define RES "windres"
+#    elif defined(__clang__)
+#      define RES "llvm-rc"
+#    endif
 #  endif // RES
 
 #  define RES_FILE "resource.o"
-#  define RES_OUT(path) OUT_PATH(path)
+#  if defined(__clang__)
+#    define RES_OUT(path) "/FO", (path)
+#  else
+#    define RES_OUT(path) OUT_PATH(path)
+#  endif
 #endif
 // clang-format on
 
@@ -90,7 +98,7 @@ int main(int argc, char **argv) {
         int bkp_argc = argc;
         char **bkp_argv = argv;
 
-        if (!nob_win32_uft8_cmdline_args(&argc, &argv)) {
+        if (!nob_win32_utf8_cmdline_args(&argc, &argv)) {
             nob_log(NOB_WARNING, "Could not generate Win32 UTF-8 Command Line Arguments, using default...");
             argc = bkp_argc;
             argv = bkp_argv;
@@ -123,8 +131,17 @@ int main(int argc, char **argv) {
         *force = true;
     }
 
-    if (*force || nob_needs_rebuild(RES_FILE, (const char *[]){ "resource.rc", "manifest.xml" }, 2) != 0) {
+    const char *rc_deps[] = { "resource.rc", "manifest.xml" };
+    if (*force || nob_needs_rebuild(RES_FILE, rc_deps, NOB_ARRAY_LEN(rc_deps)) != 0) {
+#if defined(_MSC_VER)
+#if defined(__clang__)
+        cmd_append(&cmd, RES, "/nologo", "/D", "UNICODE", "/D", "_UNICODE", RES_OUT(RES_FILE), "resource.rc");
+#else
         cmd_append(&cmd, RES, "/nologo", "/8", "/d", "UNICODE", "/d", "_UNICODE", RES_OUT(RES_FILE), "resource.rc");
+#endif
+#else
+        NOB_TODO("resource gen");
+#endif
         if (!cmd_run_sync_and_reset(&cmd)) {
             nob_log(NOB_ERROR, "Could not generate '%s' file", RES_FILE);
             return_defer(2);
